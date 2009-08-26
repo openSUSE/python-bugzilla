@@ -138,11 +138,18 @@ If you want cache the cookies and speedup the repeated connections, remove it or
         for cookie in self._iter_domain_cookies():
             cookie.expires = 0
 
+    @classmethod
+    def _read_osc_password(cls, c):
+        # supports obfuscated passwords introduced in osc-0.121
+        if c.has_option(cls.obs_url, 'passx'):
+            return c.get(cls.obs_url, 'passx').decode('base64').decode('bz2')
+        return c.get(cls.obs_url, 'pass')
+
     def readconfig(self, configpath=None):
         super(NovellBugzilla, self).readconfig(configpath)
 
         oscrc=os.path.expanduser('~/.oscrc')
-        if not self.user and not self.password \
+        if not self.user or not self.password \
             and os.path.exists(oscrc):
             from ConfigParser import SafeConfigParser, NoOptionError
             c = SafeConfigParser()
@@ -156,7 +163,7 @@ If you want cache the cookies and speedup the repeated connections, remove it or
 
             try:
                 self.user = c.get(obs_url, 'user')
-                self.password = c.get(obs_url, 'pass')
+                self.password = self._read_osc_password(c)
                 bugzilla.base.log.info("Read credentials from ~/.oscrc")
             except NoOptionError, ne:
                 return
