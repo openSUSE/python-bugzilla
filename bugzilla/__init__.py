@@ -15,6 +15,7 @@ from nvlbugzilla import NovellBugzilla
 from base import version
 import xmlrpclib
 import logging
+from urlparse import urlparse
 log = logging.getLogger("bugzilla")
 
 # advertised class list
