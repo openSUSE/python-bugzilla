@@ -307,8 +307,8 @@ class BugzillaBase(object):
         try: 
             r = self._login(self.user,self.password)
             self.logged_in = True
-            log.info("login successful - dropping password from memory")
-            self.password = ''
+            log.info("login successful")
+#            self.password = ''
         except xmlrpclib.Fault, f:
             r = False
         return r
