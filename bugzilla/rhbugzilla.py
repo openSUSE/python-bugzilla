@@ -25,7 +25,7 @@ class RHBugzilla(bugzilla.base.BugzillaBase):
     https://bugzilla.redhat.com/docs/en/html/api/extensions/compat_xmlrpc/code/webservice.html
     '''
 
-    version = '0.2'
+    version = '0.3'
     user_agent = bugzilla.base.user_agent + ' RHBugzilla/%s' % version
 
     def __init__(self,**kwargs):
@@ -368,9 +368,15 @@ class RHBugzilla3(Bugzilla34, RHBugzilla):
 
     This class was written using bugzilla.redhat.com's API docs:
     https://bugzilla.redhat.com/docs/en/html/api/
+
+    By default, _getbugs will multicall getBug(id) multiple times, rather than
+    doing a single Bug.get(idlist) call. You can disable this behavior by
+    setting the 'multicall' property to False. This will make it somewhat
+    faster, but any missing/unreadable bugs will cause the entire call to
+    Fault rather than returning any data.
     '''
 
-    version = '0.3'
+    version = '0.2'
     user_agent = bugzilla.base.user_agent + ' RHBugzilla3/%s' % version
 
     def __init__(self,**kwargs):
@@ -378,12 +384,31 @@ class RHBugzilla3(Bugzilla34, RHBugzilla):
         self.user_agent = self.__class__.user_agent
         self.multicall = kwargs.get('multicall',True)
 
-    # Use the upstream versions of these methods rather than the RHBZ ones
-    _getbugs = Bugzilla3._getbugs # Also _getbug, _getbugsimple, etc.
-    _query = Bugzilla34._query
+    # XXX it'd be nice if this wasn't just a copy of RHBugzilla's _getbugs
+    def _getbugs(self,idlist):
+        r = []
+        if self.multicall:
+            if len(idlist) == 1:
+                return [self._proxy.bugzilla.getBug(idlist[0])]
+            mc = self._multicall()
+            for id in idlist:
+                mc._proxy.bugzilla.getBug(id)
+            raw_results = mc.run()
+            del mc
+            # check results for xmlrpc errors, and replace them with None
+            r = bugzilla.base.replace_getbug_errors_with_None(raw_results)
+        else:
+            raw_results = self._proxy.Bug.get({'ids':idlist})
+            r = [i['internals'] for i in raw_results['bugs']]
+        return r
 
     # This can be removed once RHBZ supports BZ3.6's Bug.fields() method
     _getbugfields = RHBugzilla._getbugfields
+    # Use the upstream versions of these methods rather than the RHBZ ones
+    _query = Bugzilla34._query
+    # This can be activated once Bug.get() returns all the data that
+    # RHBZ's getBug() does.
+    #_getbugs = Bugzilla3._getbugs # Also _getbug, _getbugsimple, etc.
 
     #---- Methods for updating bugs.
 
