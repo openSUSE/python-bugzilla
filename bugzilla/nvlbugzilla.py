@@ -11,7 +11,7 @@
 
 #from bugzilla.base import BugzillaError, log
 import bugzilla.base
-from bugzilla import Bugzilla32
+from bugzilla import Bugzilla34
 
 import urllib
 import urllib2
@@ -21,8 +21,8 @@ import time
 import re
 import os
 
-class NovellBugzilla(Bugzilla32):
-    '''bugzilla.novell.com is a standard bugzilla 3.2 with some extensions, but
+class NovellBugzilla(Bugzilla34):
+    '''bugzilla.novell.com is a standard bugzilla 3.4 with some extensions, but
     it uses an proprietary and non-standard IChain login system. This class
     reimplements a login method which is compatible with iChain.
 
