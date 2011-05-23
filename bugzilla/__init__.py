@@ -23,6 +23,9 @@ classlist = ['Bugzilla3', 'Bugzilla32', 'Bugzilla34', 'Bugzilla36',
 
 def getBugzillaClassForURL(url):
     log.debug("Choosing subclass for %s" % url)
+    if url.startswith('https://bugzilla.novell.com'):
+        return NovellBugzilla
+
     s = xmlrpclib.ServerProxy(url)
     rhbz = False
     bzversion = ''
