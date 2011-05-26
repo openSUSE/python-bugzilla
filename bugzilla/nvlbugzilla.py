@@ -55,9 +55,11 @@ class NovellBugzilla(Bugzilla34):
 
     def __init__(self, expires=300, **kwargs):
         self._expires = expires
+        # allow proper usage of NovellBugzilla with a wrong url argument
+        # (without it or with an another location)
+        if not 'novell.com' in kwargs.get('url', ''):
+            kwargs['url'] = self.__class__.bugzilla_url
         super(NovellBugzilla, self).__init__(**kwargs)
-        # url argument exists only for backward compatibility, but is always set to same url
-        self.url = self.__class__.bugzilla_url
 
     def __get_expiration(self):
         return self._expires
