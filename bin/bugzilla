@@ -408,13 +408,13 @@ def main():
                             q[a] = 'VERIFIED,RELEASE_PENDING,CLOSED'.split(',')
                         else:
                             q[a] = i.split(',')
-                    elif a in ['cc','assigned_to','reporter','qa_contact']:
+#                    elif a in ['cc','assigned_to','reporter','qa_contact']:
                         # Emails
                         # ex.: {'email1':'foo@bar.com','emailcc1':True}
-                        q['email%i' % email_count] = i
-                        q['email%s%i' % (a,email_count)] = True
-                        q['emailtype%i' % email_count] = opt.emailtype
-                        email_count += 1
+#                        q['email%i' % email_count] = i
+#                        q['email%s%i' % (a,email_count)] = True
+#                        q['emailtype%i' % email_count] = opt.emailtype
+#                        email_count += 1
                     elif a == 'components_file': 
                         # Components slurped in from file (one component per line)
                         # This can be made more robust
