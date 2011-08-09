@@ -49,8 +49,11 @@ class NovellBugzilla(Bugzilla34):
     def connect(self, url):
         origurl = url
         spliturl = urlparse.urlsplit(url)
+        # a piece of user-friendliness:
+        # field "hostname" indicates that the supplied url was valid
+        hostname = spliturl.hostname or url
+        path = spliturl.hostname and spliturl.path or 'xmlrpc.cgi'
         # we have two bugzilla instances, both of which, with "api" prefix, accept basic auth login
-        hostname = spliturl.hostname
         if not hostname.startswith('api'):
             hostname = 'api'+hostname
 
@@ -60,7 +63,7 @@ class NovellBugzilla(Bugzilla34):
             hostname = self.user + ':' + self.password + '@' + hostname
 
         # force https scheme (because of the basic auth)
-        url = urlparse.urlunsplit(('https', hostname, spliturl.path, spliturl.query, spliturl.fragment))
+        url = urlparse.urlunsplit(('https', hostname, path, spliturl.query, spliturl.fragment))
         ret = super(NovellBugzilla, self).connect(url)
         # prevent our username+pass url from showing up in __repr__
         self.url = origurl
