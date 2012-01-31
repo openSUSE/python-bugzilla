@@ -1050,7 +1050,22 @@ class CookieTransport(xmlrpclib.Transport):
     else:
         request = request_with_cookies # python 2.6 and earlier
 
-class SafeCookieTransport(xmlrpclib.SafeTransport,CookieTransport):
+class BasicAuthTransport(xmlrpclib.SafeTransport):
+    """A subclass of xmlrpclib.SafeTransport that allows setting HTTP Basic Auth
+    without exposing it as part of URL in backtraces."""
+    auth_params = None
+
+    def get_host_info(self, host):
+        host, extra_headers, x509 = xmlrpclib.Transport.get_host_info(self, host)
+        if isinstance(self.auth_params, tuple):
+            import base64
+            auth = base64.encodestring("%s:%s" % self.auth_params).strip()
+            if extra_headers is None:
+                extra_headers = []
+            extra_headers.append(("Authorization", "Basic " + auth))
+        return host, extra_headers, x509
+
+class SafeCookieTransport(BasicAuthTransport,CookieTransport):
     '''SafeTransport subclass that supports cookies.'''
     scheme = 'https'
     # Override the appropriate request method

@@ -39,8 +39,8 @@ class NovellBugzilla(Bugzilla34):
         super(NovellBugzilla, self).__init__(**kwargs)
 
     def _login(self, user, password):
-        # using basic auth, so login happens implicitly at connect
-        pass
+        # set up data for basic auth transport
+        self._transport.auth_params = (self.user, self.password)
 
     def _logout(self):
         # using basic auth, no logout
@@ -57,17 +57,9 @@ class NovellBugzilla(Bugzilla34):
         if not hostname.startswith('api'):
             hostname = 'api'+hostname
 
-        self.readconfig()
-        # set up basic auth url
-        if self.user and self.password:
-            hostname = self.user + ':' + self.password + '@' + hostname
-
         # force https scheme (because of the basic auth)
         url = urlparse.urlunsplit(('https', hostname, path, spliturl.query, spliturl.fragment))
-        ret = super(NovellBugzilla, self).connect(url)
-        # prevent our username+pass url from showing up in __repr__
-        self.url = origurl
-        return ret
+        return super(NovellBugzilla, self).connect(url)
 
     @classmethod
     def _read_osc_password(cls, c):
