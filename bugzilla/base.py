@@ -66,6 +66,7 @@ def _decode_rfc2231_value(val):
 class _CookieTransport(xmlrpclib.Transport):
     def __init__(self, uri, cookiejar, use_datetime=0):
         self.verbose = 0
+        self.auth_params = None
 
         # python 2.4 compat
         if hasattr(xmlrpclib.Transport, "__init__"):
@@ -75,10 +76,20 @@ class _CookieTransport(xmlrpclib.Transport):
         self.opener = urllib2.build_opener()
         self.opener.add_handler(urllib2.HTTPCookieProcessor(cookiejar))
 
+    def _basic_auth_header(self):
+        if isinstance(self.auth_params, tuple):
+            import base64
+            auth = base64.encodestring("%s:%s" % self.auth_params).strip()
+            return "Basic " + auth
+        else:
+            return None
+
     def request(self, host, handler, request_body, verbose=0):
         req = urllib2.Request(self.uri)
         req.add_header('User-Agent', self.user_agent)
         req.add_header('Content-Type', 'text/xml')
+        if self.auth_params:
+            req.add_header('Authorization', self._basic_auth_header())
 
         if hasattr(self, 'accept_gzip_encoding') and self.accept_gzip_encoding:
             req.add_header('Accept-Encoding', 'gzip')
@@ -193,6 +204,7 @@ class BugzillaBase(object):
         self.url = ''
 
         self._cookiejar = None
+        self._transport = None
 
         self.logged_in = False
 
@@ -356,9 +368,9 @@ class BugzillaBase(object):
             url = self.url
         url = self.fix_url(url)
 
-        transport = _CookieTransport(url, self._cookiejar)
-        transport.user_agent = self.user_agent
-        self._proxy = xmlrpclib.ServerProxy(url, transport)
+        self._transport = _CookieTransport(url, self._cookiejar)
+        self._transport.user_agent = self.user_agent
+        self._proxy = xmlrpclib.ServerProxy(url, self._transport)
 
         self.url = url
         # we've changed URLs - reload config
