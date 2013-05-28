@@ -24,7 +24,7 @@ import xmlrpclib
 
 import bugzilla
 
-default_bz = 'https://bugzilla.redhat.com/xmlrpc.cgi'
+default_bz = 'https://bugzilla.novell.com/xmlrpc.cgi'
 
 _is_unittest = bool(os.getenv("__BUGZILLA_UNITTEST"))
 cmdlist = ['login', 'new', 'query', 'modify', 'attach', 'info']
