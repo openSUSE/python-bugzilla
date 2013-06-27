@@ -9,7 +9,7 @@
 # option) any later version.  See http://www.gnu.org/copyleft/gpl.html for
 # the full text of the license.
 
-__version__ = "0.8.0suse2"
+__version__ = "0.9.0suse3"
 version = __version__
 
 import logging
@@ -36,7 +36,7 @@ def getBugzillaClassForURL(url):
     if "bugzilla.redhat.com" in url:
         log.info("Using RHBugzilla for URL containing bugzilla.redhat.com")
         return RHBugzilla
-    if "bugzilla.novell.com" in url:
+    if ".novell.com" in url:
         logging.info("Using NovellBugzilla for URL containing novell.com")
         return NovellBugzilla
 
@@ -93,7 +93,7 @@ class Bugzilla(object):
     def __init__(self, **kwargs):
         log.info("Bugzilla v%s initializing" % __version__)
         if 'url' not in kwargs:
-            raise TypeError("You must pass a valid bugzilla xmlrpc.cgi URL")
+            raise TypeError("You must pass a valid bugzilla URL")
 
         # pylint: disable=W0233
         # Use of __init__ of non parent class

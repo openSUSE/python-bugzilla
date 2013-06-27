@@ -252,6 +252,10 @@ class RHPartnerTest(BaseTest):
         self.assertTrue(email2 in bug.cc)
         self.assertEquals(len(bug.cc), 2)
 
+        tests.clicomm(cmd + "--cc -%s" % email1, bz)
+        bug.refresh()
+        self.assertTrue(email1 not in bug.cc)
+
         # Test assigned target
         tests.clicomm(cmd + "--assignee %s" % email1, bz)
         bug.refresh()
@@ -264,14 +268,12 @@ class RHPartnerTest(BaseTest):
 
         # Reset values
         bug.deletecc(bug.cc)
-        email = "wwoods@redhat.com"
-        tests.clicomm(cmd + "--assignee %s" % email, bz)
-        tests.clicomm(cmd + "--qa_contact %s" % email, bz)
+        tests.clicomm(cmd + "--reset-qa-contact --reset-assignee", bz)
 
         bug.refresh()
         self.assertEquals(bug.cc, [])
-        self.assertEquals(bug.assigned_to, email)
-        self.assertEquals(bug.qa_contact, email)
+        self.assertEquals(bug.assigned_to, "wwoods@redhat.com")
+        self.assertEquals(bug.qa_contact, "extras-qa@fedoraproject.org")
 
 
     def test7ModifyMultiFlags(self):
@@ -349,6 +351,86 @@ class RHPartnerTest(BaseTest):
         bug2.refresh()
         self.assertEquals(bug1.fixed_in, "-")
         self.assertEquals(bug2.fixed_in, "-")
+
+
+    def test7ModifyMisc(self):
+        bugid = "461686"
+        cmd = "bugzilla modify %s " % bugid
+        bz = self.bzclass(url=self.url, cookiefile=cf)
+        bug = bz.getbug(bugid)
+
+        # modify --dependson
+        tests.clicomm(cmd + "--dependson 123456", bz)
+        bug.refresh()
+        self.assertTrue(123456 in bug.depends_on)
+        tests.clicomm(cmd + "--dependson =111222", bz)
+        bug.refresh()
+        self.assertEquals([111222], bug.depends_on)
+        tests.clicomm(cmd + "--dependson -111222", bz)
+        bug.refresh()
+        self.assertEquals([], bug.depends_on)
+
+        # modify --blocked
+        tests.clicomm(cmd + "--blocked 123,456", bz)
+        bug.refresh()
+        self.assertEquals([123, 456], bug.blocks)
+        tests.clicomm(cmd + "--blocked =", bz)
+        bug.refresh()
+        self.assertEquals([], bug.blocks)
+
+        # modify --keywords
+        tests.clicomm(cmd + "--keywords +Documentation --keywords EasyFix", bz)
+        bug.refresh()
+        self.assertEquals(["Documentation", "EasyFix"], bug.keywords)
+        tests.clicomm(cmd + "--keywords -EasyFix --keywords -Documentation",
+                      bz)
+        bug.refresh()
+        self.assertEquals([], bug.keywords)
+
+        # modify --target_release
+        # modify --target_milestone
+        targetbugid = 831888
+        targetbug = bz.getbug(targetbugid)
+        targetcmd = "bugzilla modify %s " % targetbugid
+        tests.clicomm(targetcmd +
+                      "--target_milestone beta --target_release 6.2", bz)
+        targetbug.refresh()
+        self.assertEquals(targetbug.target_milestone, "beta")
+        self.assertEquals(targetbug.target_release, ["6.2"])
+        tests.clicomm(targetcmd +
+                      "--target_milestone rc --target_release 6.0", bz)
+        targetbug.refresh()
+        self.assertEquals(targetbug.target_milestone, "rc")
+        self.assertEquals(targetbug.target_release, ["6.0"])
+
+        # modify --priority
+        # modify --severity
+        tests.clicomm(cmd + "--priority low --severity high", bz)
+        bug.refresh()
+        self.assertEquals(bug.priority, "low")
+        self.assertEquals(bug.severity, "high")
+        tests.clicomm(cmd + "--priority medium --severity medium", bz)
+        bug.refresh()
+        self.assertEquals(bug.priority, "medium")
+        self.assertEquals(bug.severity, "medium")
+
+        # modify --os
+        # modify --platform
+        # modify --version
+        tests.clicomm(cmd + "--version 18 --os Windows --arch ppc "
+                            "--url http://example.com", bz)
+        bug.refresh()
+        self.assertEquals(bug.version, "18")
+        self.assertEquals(bug.op_sys, "Windows")
+        self.assertEquals(bug.platform, "ppc")
+        self.assertEquals(bug.url, "http://example.com")
+        tests.clicomm(cmd + "--version rawhide --os Linux --arch s390 "
+                            "--url http://example.com/fribby", bz)
+        bug.refresh()
+        self.assertEquals(bug.version, "rawhide")
+        self.assertEquals(bug.op_sys, "Linux")
+        self.assertEquals(bug.platform, "s390")
+        self.assertEquals(bug.url, "http://example.com/fribby")
 
 
     def test8Attachments(self):
@@ -446,15 +528,17 @@ class RHPartnerTest(BaseTest):
     def test9Whiteboards(self):
         bz = self.bzclass(url=self.url, cookiefile=cf)
         bug_id = "663674"
-        bug = bz.getbug("663674")
+        cmd = "bugzilla modify %s " % bug_id
+        bug = bz.getbug(bug_id)
 
         # Set all whiteboards
         initval = str(random.randint(1, 1024))
-        bug.setwhiteboard(initval + "status", "status")
-        bug.setwhiteboard(initval + "qa", "qa")
-        bug.setwhiteboard(initval + "devel", "devel")
-        bug.setwhiteboard(initval + "internal, security, foo security1",
-                         "internal")
+        tests.clicomm(cmd +
+                "--whiteboard =%sstatus "
+                "--devel_whiteboard =%sdevel "
+                "--internal_whiteboard '=%sinternal, security, foo security1' "
+                "--qa_whiteboard =%sqa " %
+                (initval, initval, initval, initval), bz)
 
         bug.refresh()
         self.assertEquals(bug.whiteboard, initval + "status")
@@ -463,29 +547,21 @@ class RHPartnerTest(BaseTest):
         self.assertEquals(bug.internal_whiteboard,
                           initval + "internal, security, foo security1")
 
-        # Via the command line
-        tests.clicomm("bugzilla modify %s --whiteboard foo" % bug_id, bz)
-        bug.refresh()
-        self.assertEquals(bug.whiteboard, initval + "status foo")
-
-        tests.clicomm("bugzilla modify %s --whiteboard =%s" %
-                      (bug_id, initval + "status"), bz)
-        bug.refresh()
-        self.assertEquals(bug.whiteboard, initval + "status")
-
         # Modify whiteboards
-        bug.appendwhiteboard("-app", "qa")
+        tests.clicomm(cmd +
+                      "--whiteboard =foobar "
+                      "--qa_whiteboard _app ", bz)
         bug.prependwhiteboard("pre-", "devel")
-        bug.setwhiteboard("foobar", "status")
 
         bug.refresh()
-        self.assertEquals(bug.qa_whiteboard, initval + "qa" + " -app")
+        self.assertEquals(bug.qa_whiteboard, initval + "qa" + " _app")
         self.assertEquals(bug.devel_whiteboard, "pre- " + initval + "devel")
         self.assertEquals(bug.status_whiteboard, "foobar")
 
         # Verify that tag manipulation is smart about separator
-        bug.deltag("-app", "qa")
-        bug.deltag("security", "internal")
+        tests.clicomm(cmd +
+                      "--qa_whiteboard -_app "
+                      "--internal_whiteboard -security", bz)
         bug.refresh()
 
         self.assertEquals(bug.qa_whiteboard, initval + "qa")

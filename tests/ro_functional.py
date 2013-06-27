@@ -29,7 +29,7 @@ class BaseTest(unittest.TestCase):
 
         bz = self.bzclass(url=self.url, cookiefile=None)
         if expectexc:
-            self.assertRaises(RuntimeError, tests.clicomm, comm, bz)
+            self.assertRaises(Exception, tests.clicomm, comm, bz)
         else:
             return tests.clicomm(comm, bz)
 
@@ -74,13 +74,13 @@ class BaseTest(unittest.TestCase):
             return
 
         self.assertTrue(len(out.splitlines()) >= mincount)
-        self.assertTrue(any([l.startswith("#" + expectbug)
-                             for l in out.splitlines()]))
+        self.assertTrue(bool([l for l in out.splitlines() if
+                              l.startswith("#" + expectbug)]))
 
         # Check --ids output option
         out2 = self.clicomm(cli + " --ids")
         self.assertTrue(len(out.splitlines()) == len(out2.splitlines()))
-        self.assertTrue(any([l == expectbug for l in out2.splitlines()]))
+        self.assertTrue(bool([l for l in out2.splitlines() if l == expectbug]))
 
 
     def _testQueryFull(self, bugid, mincount, expectstr):
@@ -145,7 +145,7 @@ class BZ34(BaseTest):
 
 
 class BZ42(BaseTest):
-    url = "https://bugzilla.freedesktop.org/xmlrpc.cgi"
+    url = "https://bugs.freedesktop.org/xmlrpc.cgi"
     bzclass = bugzilla.Bugzilla4
     closestatus = "CLOSED,RESOLVED"
 
@@ -162,27 +162,6 @@ class BZ42(BaseTest):
                 "--bug_id 3450 --outputformat "
                 "\"%{bug_id} %{assigned_to} %{summary}\"",
                 "3450 daniel@fooishbar.org Error")
-
-
-class NovellBugzilla(BaseTest):
-    url = "https://bugzilla.novell.com/xmlrpc.cgi"
-    bzclass = bugzilla.NovellBugzilla
-
-    test0 = BaseTest._testBZClass
-
-    test1 = lambda s: BaseTest._testQuery(s,
-            "--product \"openSUSE 11.0\" --component Basesystem",
-            15, "83209")
-
-    def testLoginFail(self):
-        # Currently gives a 404 error, so something is busted.
-        # However if I drop all the custom stuff plain ol BZ login works
-        bz = self.bzclass(url=self.url, cookiefile=None)
-        try:
-            bz.login("foouser", "barpassword")
-            raise AssertionError("Expected novell login fail")
-        except Exception, e:
-            self.assertTrue("404" in str(e))
 
 
 class RHTest(BaseTest):

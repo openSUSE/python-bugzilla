@@ -11,8 +11,12 @@
 
 import cookielib
 import os
+import StringIO
 import urllib2
+import urlparse
 import xmlrpclib
+
+import pycurl
 
 from bugzilla import __version__, log
 from bugzilla.bug import _Bug, _User
@@ -62,54 +66,110 @@ def _decode_rfc2231_value(val):
                    for f in header.decode_header(val))
 
 
-# CookieTransport code mostly borrowed from pybugz
-class _CookieTransport(xmlrpclib.Transport):
-    def __init__(self, uri, cookiejar, use_datetime=0):
-        self.verbose = 0
+def _build_cookiejar(cookiefile):
+    cj = cookielib.MozillaCookieJar(cookiefile)
+    if cookiefile is None:
+        return cj
+    if not os.path.exists(cookiefile):
+        # Make sure a new file has correct permissions
+        open(cookiefile, 'a').close()
+        os.chmod(cookiefile, 0600)
+        cj.save()
+        return cj
+
+    # We always want to use Mozilla cookies, but we previously accepted
+    # LWP cookies. If we see the latter, convert it to former
+    try:
+        cj.load()
+        return cj
+    except cookielib.LoadError:
+        pass
+
+    try:
+        cj = cookielib.LWPCookieJar(cookiefile)
+        cj.load()
+    except cookielib.LoadError:
+        raise BugzillaError("cookiefile=%s not in LWP or Mozilla format" %
+                            cookiefile)
+
+    retcj = cookielib.MozillaCookieJar(cookiefile)
+    for cookie in cj:
+        retcj.set_cookie(cookie)
+    retcj.save()
+    return retcj
+
+
+class _CURLTransport(xmlrpclib.Transport):
+    def __init__(self, url, cookiejar,
+                 sslverify=True, sslcafile=None, debug=0):
+        if hasattr(xmlrpclib.Transport, "__init__"):
+            xmlrpclib.Transport.__init__(self, use_datetime=False)
+
+        self.verbose = debug
         self.auth_params = None
 
-        # python 2.4 compat
-        if hasattr(xmlrpclib.Transport, "__init__"):
-            xmlrpclib.Transport.__init__(self, use_datetime=use_datetime)
+        # transport constructor needs full url too, as xmlrpc does not pass
+        # scheme to request
+        self.scheme = urlparse.urlparse(url)[0]
+        if self.scheme not in ["http", "https"]:
+            raise Exception("Invalid URL scheme: %s (%s)" % (self.scheme, url))
 
-        self.uri = uri
-        self.opener = urllib2.build_opener()
-        self.opener.add_handler(urllib2.HTTPCookieProcessor(cookiejar))
+        self.c = pycurl.Curl()
+        self.c.setopt(pycurl.POST, 1)
+        self.c.setopt(pycurl.CONNECTTIMEOUT, 30)
+        self.c.setopt(pycurl.HTTPHEADER, [
+            "Content-Type: text/xml",
+        ])
+        self.c.setopt(pycurl.VERBOSE, debug)
 
-    def _basic_auth_header(self):
-        if isinstance(self.auth_params, tuple):
-            import base64
-            auth = base64.encodestring("%s:%s" % self.auth_params).strip()
-            return "Basic " + auth
-        else:
-            return None
+        self.set_cookiejar(cookiejar)
+
+        # ssl settings
+        if self.scheme == "https":
+            # override curl built-in ca file setting
+            if sslcafile is not None:
+                self.c.setopt(pycurl.CAINFO, sslcafile)
+
+            # disable ssl verification
+            if not sslverify:
+                self.c.setopt(pycurl.SSL_VERIFYPEER, 0)
+                self.c.setopt(pycurl.SSL_VERIFYHOST, 0)
+
+    def set_cookiejar(self, cj):
+        self.c.setopt(pycurl.COOKIEFILE, cj.filename or "")
+        self.c.setopt(pycurl.COOKIEJAR, cj.filename or "")
+
+    def get_cookies(self):
+        return self.c.getinfo(pycurl.INFO_COOKIELIST)
+
+    def open_helper(self, url, request_body):
+        self.c.setopt(pycurl.URL, url)
+        self.c.setopt(pycurl.POSTFIELDS, request_body)
+        if self.auth_params:
+            self.c.setopt(pycurl.USERPWD, "%s:%s" % self.auth_params)
+            self.c.setopt(pycurl.HTTPAUTH, pycurl.HTTPAUTH_ANY)
+
+        b = StringIO.StringIO()
+        self.c.setopt(pycurl.WRITEFUNCTION, b.write)
+        try:
+            self.c.perform()
+        except pycurl.error, e:
+            raise xmlrpclib.ProtocolError(url, e[0], e[1], None)
+
+        b.seek(0)
+        return b
 
     def request(self, host, handler, request_body, verbose=0):
-        req = urllib2.Request(self.uri)
-        req.add_header('User-Agent', self.user_agent)
-        req.add_header('Content-Type', 'text/xml')
-        if self.auth_params:
-            req.add_header('Authorization', self._basic_auth_header())
+        self.verbose = verbose
+        url = "%s://%s%s" % (self.scheme, host, handler)
 
-        if hasattr(self, 'accept_gzip_encoding') and self.accept_gzip_encoding:
-            req.add_header('Accept-Encoding', 'gzip')
+        # xmlrpclib fails to escape \r
+        request_body = request_body.replace('\r', '&#xd;')
 
-        req.add_data(request_body)
+        stringio = self.open_helper(url, request_body)
+        return self.parse_response(stringio)
 
-        resp = self.opener.open(req)
 
-        # In Python 2, resp is a urllib.addinfourl instance, which does not
-        # have the getheader method that parse_response expects.
-        if not hasattr(resp, 'getheader'):
-            resp.getheader = resp.headers.getheader
-
-        if resp.code == 200:
-            self.verbose = verbose
-            return self.parse_response(resp)
-
-        resp.close()
-        raise xmlrpclib.ProtocolError(self.uri, resp.status,
-                                      resp.reason, resp.msg)
 
 
 class BugzillaError(Exception):
@@ -164,8 +224,6 @@ class BugzillaBase(object):
         Given a big huge bugzilla query URL, returns a query dict that can
         be passed along to the Bugzilla.query() method.
         '''
-        import urlparse
-
         q = {}
         (ignore, ignore, path,
          ignore, query, ignore) = urlparse.urlparse(url)
@@ -197,14 +255,16 @@ class BugzillaBase(object):
             url = url + '/xmlrpc.cgi'
         return url
 
-    def __init__(self, url=None, user=None, password=None, cookiefile=-1):
+    def __init__(self, url=None, user=None, password=None, cookiefile=-1,
+                 sslverify=True):
         # Settings the user might want to tweak
         self.user = user or ''
         self.password = password or ''
         self.url = ''
 
-        self._cookiejar = None
         self._transport = None
+        self._cookiejar = None
+        self._sslverify = bool(sslverify)
 
         self.logged_in = False
 
@@ -285,9 +345,11 @@ class BugzillaBase(object):
         '''
         return self._cookiejar.filename
 
+    def _delcookiefile(self):
+        self._cookiejar = None
+
     def _setcookiefile(self, cookiefile):
-        if (self._cookiejar and
-            cookiefile == self._cookiejar.filename):
+        if (self._cookiejar and cookiefile == self._cookiejar.filename):
             return
 
         if self._proxy is not None:
@@ -295,27 +357,7 @@ class BugzillaBase(object):
                                "disconnect() first.")
 
         log.debug("Using cookiefile=%s", cookiefile)
-        # It first tries to use the existing cookiejar object. If it fails, it
-        # falls back to MozillaCookieJar.
-        do_load = cookiefile is not None and os.path.exists(cookiefile)
-        try:
-            cj = cookielib.LWPCookieJar(cookiefile)
-            if do_load:
-                cj.load()
-        except cookielib.LoadError:
-            cj = cookielib.MozillaCookieJar(cookiefile)
-            if do_load:
-                cj.load()
-
-        if cookiefile is not None and not do_load:
-            open(cookiefile, 'a').close()
-            os.chmod(cookiefile, 0600)
-            cj.save()
-
-        self._cookiejar = cj
-
-    def _delcookiefile(self):
-        self._cookiejar = None
+        self._cookiejar = _build_cookiejar(cookiefile)
 
     cookiefile = property(_getcookiefile, _setcookiefile, _delcookiefile)
 
@@ -368,9 +410,11 @@ class BugzillaBase(object):
             url = self.url
         url = self.fix_url(url)
 
-        self._transport = _CookieTransport(url, self._cookiejar)
+        self._transport = _CURLTransport(url, self._cookiejar,
+                                         sslverify=self._sslverify)
         self._transport.user_agent = self.user_agent
         self._proxy = xmlrpclib.ServerProxy(url, self._transport)
+
 
         self.url = url
         # we've changed URLs - reload config
@@ -428,8 +472,6 @@ class BugzillaBase(object):
         except xmlrpclib.Fault:
             r = False
 
-        if r and self._cookiejar.filename:
-            self._cookiejar.save()
         return r
 
     def logout(self):
@@ -770,13 +812,109 @@ class BugzillaBase(object):
     # query methods #
     #################
 
-    def build_query(self, *args, **kwargs):
-        raise NotImplementedError("This version of bugzilla does not "
-                                  "support bug querying.")
+
+    def build_query(self,
+                    product=None,
+                    component=None,
+                    version=None,
+                    long_desc=None,
+                    bug_id=None,
+                    short_desc=None,
+                    cc=None,
+                    assigned_to=None,
+                    reporter=None,
+                    qa_contact=None,
+                    status=None,
+                    blocked=None,
+                    dependson=None,
+                    keywords=None,
+                    keywords_type=None,
+                    url=None,
+                    url_type=None,
+                    status_whiteboard=None,
+                    status_whiteboard_type=None,
+                    fixed_in=None,
+                    fixed_in_type=None,
+                    flag=None,
+                    alias=None,
+                    qa_whiteboard=None,
+                    devel_whiteboard=None,
+                    boolean_query=None,
+                    bug_severity=None,
+                    priority=None,
+                    target_milestone=None,
+                    emailtype=None,
+                    booleantype=None,
+                    include_fields=None):
+        """
+        Build a query string from passed arguments. Will handle
+        query parameter differences between various bugzilla versions.
+
+        Most of the parameters should be self explanatory. However
+        if you want to perform a complex query, and easy way is to
+        create it with the bugzilla web UI, copy the entire URL it
+        generates, and pass it to the static method
+
+        Bugzilla.url_to_query
+
+        Then pass the output to Bugzilla.query()
+        """
+        # pylint: disable=W0221
+        # Argument number differs from overridden method
+        # Base defines it with *args, **kwargs, so we don't have to maintain
+        # the master argument list in 2 places
+
+        ignore = include_fields
+        ignore = emailtype
+        ignore = booleantype
+
+        for key, val in [
+            ('fixed_in', fixed_in),
+            ('blocked', blocked),
+            ('dependson', dependson),
+            ('flag', flag),
+            ('qa_whiteboard', qa_whiteboard),
+            ('devel_whiteboard', devel_whiteboard),
+            ('alias', alias),
+            ('boolean_query', boolean_query),
+        ]:
+            if not val is None:
+                raise RuntimeError("'%s' search not supported by this "
+                                   "bugzilla" % key)
+
+        query = {
+            "product": self._listify(product),
+            "component": self._listify(component),
+            "version": version,
+            "long_desc": long_desc,
+            "id": bug_id,
+            "short_desc": short_desc,
+            "bug_status": status,
+            "keywords": keywords,
+            "keywords_type": keywords_type,
+            "bug_file_loc": url,
+            "bug_file_loc_type": url_type,
+            "status_whiteboard": status_whiteboard,
+            "status_whiteboard_type": status_whiteboard_type,
+            "fixed_in_type": fixed_in_type,
+            "bug_severity": bug_severity,
+            "priority": priority,
+            "target_milestone": target_milestone,
+            "assigned_to": assigned_to,
+            "cc": cc,
+            "qa_contact": qa_contact,
+            "reporter": reporter,
+        }
+
+        # Strip out None elements in the dict
+        for key in query.keys():
+            if query[key] is None:
+                del(query[key])
+        return query
 
     def _query(self, query):
         # This is kinda redundant now, but various scripts call
-        # _query with their own assembled dictionarys, so don't
+        # _query with their own assembled dictionaries, so don't
         # drop this lest we needlessly break those users
         return self._proxy.Bug.search(query)
 
@@ -849,9 +987,151 @@ class BugzillaBase(object):
 
         return self._proxy.Bug.update(tmp)
 
-    def build_update(self, *args, **kwargs):
-        raise NotImplementedError("This bugzilla instance does not support "
-                "modifying bugs")
+    def update_flags(self, idlist, flags):
+        '''
+        Updates the flags associated with a bug report.
+        Format of flags is:
+        [{"name": "needinfo", "status": "+", "requestee": "foo@bar.com"},
+         {"name": "devel_ack", "status": "-"}, ...]
+        '''
+        d = {"ids": self._listify(idlist), "updates": flags}
+        return self._proxy.Flag.update(d)
+
+
+    def build_update(self,
+                     alias=None,
+                     assigned_to=None,
+                     blocks_add=None,
+                     blocks_remove=None,
+                     blocks_set=None,
+                     depends_on_add=None,
+                     depends_on_remove=None,
+                     depends_on_set=None,
+                     cc_add=None,
+                     cc_remove=None,
+                     is_cc_accessible=None,
+                     comment=None,
+                     comment_private=None,
+                     component=None,
+                     deadline=None,
+                     dupe_of=None,
+                     estimated_time=None,
+                     groups_add=None,
+                     groups_remove=None,
+                     keywords_add=None,
+                     keywords_remove=None,
+                     keywords_set=None,
+                     op_sys=None,
+                     platform=None,
+                     priority=None,
+                     product=None,
+                     qa_contact=None,
+                     is_creator_accessible=None,
+                     remaining_time=None,
+                     reset_assigned_to=None,
+                     reset_qa_contact=None,
+                     resolution=None,
+                     see_also_add=None,
+                     see_also_remove=None,
+                     severity=None,
+                     status=None,
+                     summary=None,
+                     target_milestone=None,
+                     target_release=None,
+                     url=None,
+                     version=None,
+                     whiteboard=None,
+                     work_time=None,
+                     fixed_in=None,
+                     qa_whiteboard=None,
+                     devel_whiteboard=None,
+                     internal_whiteboard=None):
+        # pylint: disable=W0221
+        # Argument number differs from overridden method
+        # Base defines it with *args, **kwargs, so we don't have to maintain
+        # the master argument list in 2 places
+        ret = {}
+
+        # These are only supported for rhbugzilla
+        for key, val in [
+            ("fixed_in", fixed_in),
+            ("devel_whiteboard", devel_whiteboard),
+            ("qa_whiteboard", qa_whiteboard),
+            ("internal_whiteboard", internal_whiteboard),
+        ]:
+            if val is not None:
+                raise ValueError("bugzilla instance does not support "
+                                 "updating '%s'" % key)
+
+        def s(key, val, convert=None):
+            if val is None:
+                return
+            if convert:
+                val = convert(val)
+            ret[key] = val
+
+        def add_dict(key, add, remove, _set=None, convert=None):
+            if add is remove is _set is None:
+                return
+
+            def c(val):
+                val = self._listify(val)
+                if convert:
+                    val = [convert(v) for v in val]
+                return val
+
+            newdict = {}
+            if add is not None:
+                newdict["add"] = c(add)
+            if remove is not None:
+                newdict["remove"] = c(remove)
+            if _set is not None:
+                newdict["set"] = c(_set)
+            ret[key] = newdict
+
+
+        s("alias", alias)
+        s("assigned_to", assigned_to)
+        s("is_cc_accessible", is_cc_accessible, bool)
+        s("component", component)
+        s("deadline", deadline)
+        s("dupe_of", dupe_of, int)
+        s("estimated_time", estimated_time, int)
+        s("op_sys", op_sys)
+        s("platform", platform)
+        s("priority", priority)
+        s("product", product)
+        s("qa_contact", qa_contact)
+        s("is_creator_accessible", is_creator_accessible, bool)
+        s("remaining_time", remaining_time, float)
+        s("reset_assigned_to", reset_assigned_to, bool)
+        s("reset_qa_contact", reset_qa_contact, bool)
+        s("resolution", resolution)
+        s("severity", severity)
+        s("status", status)
+        s("summary", summary)
+        s("target_milestone", target_milestone)
+        s("target_release", target_release)
+        s("url", url)
+        s("version", version)
+        s("whiteboard", whiteboard)
+        s("work_time", work_time, float)
+
+        add_dict("blocks", blocks_add, blocks_remove, blocks_set,
+                 convert=int)
+        add_dict("depends_on", depends_on_add, depends_on_remove,
+                 depends_on_set, convert=int)
+        add_dict("cc", cc_add, cc_remove)
+        add_dict("groups", groups_add, groups_remove)
+        add_dict("keywords", keywords_add, keywords_remove, keywords_set)
+        add_dict("see_also", see_also_add, see_also_remove)
+
+        if comment is not None:
+            ret["comment"] = {"comment": comment}
+            if comment_private:
+                ret["comment"]["is_private"] = comment_private
+
+        return ret
 
 
     ########################################
@@ -937,18 +1217,32 @@ class BugzillaBase(object):
         '''Get the contents of the attachment with the given attachment ID.
         Returns a file-like object.'''
         att_uri = self._attachment_uri(attachid)
-        opener = urllib2.build_opener(
-            urllib2.HTTPCookieProcessor(self._cookiejar))
-        att = opener.open(att_uri)
 
-        # RFC 2183 defines the content-disposition header, if you're curious
-        disp = att.headers['content-disposition'].split(';')
+        headers = {}
+        ret = StringIO.StringIO()
+
+        def headers_cb(buf):
+            if not ":" in buf:
+                return
+            name, val = buf.split(":", 1)
+            headers[name.lower()] = val
+
+        c = pycurl.Curl()
+        c.setopt(pycurl.URL, att_uri)
+        c.setopt(pycurl.WRITEFUNCTION, ret.write)
+        c.setopt(pycurl.HEADERFUNCTION, headers_cb)
+        c.setopt(pycurl.COOKIEFILE, self._cookiejar.filename or "")
+        c.perform()
+        c.close()
+
+        disp = headers['content-disposition'].split(';')
         disp.pop(0)
         parms = dict([p.strip().split("=", 1) for p in disp])
-        # Parameter values can be quoted/encoded as per RFC 2231
-        att.name = _decode_rfc2231_value(parms['filename'])
+        ret.name = _decode_rfc2231_value(parms['filename'])
+
         # Hooray, now we have a file-like object with .read() and .name
-        return att
+        ret.seek(0)
+        return ret
 
     def updateattachmentflags(self, bugid, attachid, flagname, **kwargs):
         '''
@@ -976,20 +1270,77 @@ class BugzillaBase(object):
     createbug_required = ('product', 'component', 'summary', 'version',
                           'description')
 
-    def _createbug(self, **data):
-        '''Raw xmlrpc call for createBug() Doesn't bother guessing defaults
-        or checking argument validity. Use with care.
-        Returns bug_id'''
-        r = self._proxy.Bug.create(data)
-        return r['id']
+    def build_createbug(self,
+        product=None,
+        component=None,
+        version=None,
+        summary=None,
+        description=None,
+        comment_private=None,
+        blocks=None,
+        cc=None,
+        depends_on=None,
+        groups=None,
+        op_sys=None,
+        platform=None,
+        priority=None,
+        qa_contact=None,
+        resolution=None,
+        severity=None,
+        status=None,
+        target_milestone=None,
+        target_release=None,
+        url=None):
 
-    def createbug(self, **data):
+        localdict = {}
+        if blocks:
+            localdict["blocks"] = self._listify(blocks)
+        if cc:
+            localdict["cc"] = self._listify(cc)
+        if depends_on:
+            localdict["depends_on"] = self._listify(depends_on)
+        if groups:
+            localdict["groups"] = self._listify(groups)
+        if description:
+            localdict["description"] = description
+            if comment_private:
+                localdict["comment_is_private"] = True
+
+        # Most of the machinery and formatting here is the same as
+        # build_update, so reuse that as much as possible
+        ret = self.build_update(product=product, component=component,
+                version=version, summary=summary, op_sys=op_sys,
+                platform=platform, priority=priority, qa_contact=qa_contact,
+                resolution=resolution, severity=severity, status=status,
+                target_milestone=target_milestone,
+                target_release=target_release, url=url)
+
+        ret.update(localdict)
+        return ret
+
+
+    def createbug(self, *args, **kwargs):
         '''
         Create a bug with the given info. Returns a new Bug object.
         Check bugzilla API documentation for valid values, at least
         product, component, summary, version, and description need to
         be passed.
         '''
+        # Previous API required users specifying keyword args that mapped
+        # to the XMLRPC arg names. Maintain that bad compat, but also allow
+        # receiving a single dictionary like query() does
+        if kwargs and args:
+            raise BugzillaError("createbug: cannot specify positional "
+                                "args=%s with kwargs=%s, must be one or the "
+                                "other." % (args, kwargs))
+        if args:
+            if len(args) > 1 or type(args[0]) is not dict:
+                raise BugzillaError("createbug: positional arguments only "
+                                    "accept a single dictionary.")
+            data = args[0]
+        else:
+            data = kwargs
+
         log.debug("bz.createbug(%s)", data)
 
         # If we're getting a call that uses an old fieldname, convert it to the
@@ -1004,8 +1355,8 @@ class BugzillaBase(object):
         if "check_args" in data:
             del(data["check_args"])
 
-        bug_id = self._createbug(**data)
-        return _Bug(self, bug_id=bug_id)
+        rawbug = self._proxy.Bug.create(data)
+        return _Bug(self, bug_id=rawbug["id"])
 
 
     ##############################

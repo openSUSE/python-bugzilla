@@ -79,7 +79,7 @@ def open_without_clobber(name, *args):
 
 def setup_parser():
     u = ("%%prog [global options] COMMAND [command-options]"
-         "\nCommands: %s" % ','.join(cmdlist))
+         "\nCommands: %s" % ', '.join(cmdlist))
     p = optparse.OptionParser(usage=u, version=bugzilla.__version__)
     p.disable_interspersed_args()
     p.epilog = 'Try "bugzilla COMMAND --help" for command-specific help.'
@@ -90,6 +90,9 @@ def setup_parser():
     p.add_option('--bztype', default='auto',
             help="Bugzilla type. Autodetected if not set. "
                  "Available types: %s" % " ".join(bugzilla.classlist))
+    p.add_option("--nosslverify", dest="sslverify",
+                 action="store_false", default=True,
+                 help="Don't error on invalid bugzilla SSL certificate")
     p.add_option('--user',
             help="username")
     p.add_option('--password',
@@ -113,36 +116,30 @@ def setup_action_parser(action):
 
     if action == 'new':
         p.set_description("Create a new bug report.")
-        p.add_option('-p', '--product',
-                help="REQUIRED: product name (list with 'bugzilla info -p')")
-        p.add_option('-v', '--version',
-                help="REQUIRED: product version")
-        p.add_option('-c', '--component',
-                help="REQUIRED: component name "
-                     "(list with 'bugzilla info -c PRODUCT')")
-        p.add_option('-l', '--comment', dest='description',
-                help="REQUIRED: initial bug comment")
+        p.add_option('-p', '--product', help="REQUIRED: product name")
+        p.add_option('-v', '--version', help="REQUIRED: product version")
+        p.add_option('-c', '--component', help="REQUIRED: component name")
         p.add_option('-s', '--short_desc', '--summary', dest='summary',
                 help="REQUIRED: bug summary")
-        p.add_option('-o', '--os', dest='op_sys',
-                help="OPTIONAL: operating system (default: Linux)")
-        p.add_option('-a', '--arch', dest='platform',
-                help="OPTIONAL: arch this bug occurs on (default: All)")
-        p.add_option('--severity',
-                help="OPTIONAL: bug severity (default: medium)")
-        p.add_option('--priority',
-                help="OPTIONAL: bug priority (default: medium)")
-        p.add_option('-u', '--url', dest='bug_file_loc',
-                help="OPTIONAL: URL for further bug info")
-        p.add_option('--cc', metavar='CC[, CC, ...]',
-                help="OPTIONAL: add emails to initial CC list")
-        p.add_option('--blocked', metavar='BUGID[, BUGID, ...]',
-                help="OPTIONAL: add bug_ids blocked by this bug")
-        p.add_option('--dependson', metavar='BUGID[, BUGID, ...]',
-                help="OPTIONAL: add bug_ids that this bug depends on")
-        p.add_option('--groups', metavar='GROUP[, GROUP, ...]',
-                help="OPTIONAL: add groups to which bug is visible")
-        # no API to attach files during bug creation, so no --attach :/
+        p.add_option('-l', '--comment', dest='description',
+                help="initial bug comment")
+        p.add_option('-o', '--os', help="Operating system")
+        p.add_option('-a', '--arch', help="Arch this bug occurs on")
+        p.add_option('--severity', help="Bug severity")
+        p.add_option('--priority', help="Bug priority")
+        p.add_option('-u', '--url', help="URL for further bug info")
+        p.add_option('--cc',
+                metavar='CC[, CC, ...]', action="append",
+                help="add emails to initial CC list")
+        p.add_option('--blocked',
+                metavar='BUGID[, BUGID, ...]', action="append",
+                help="add bug_ids blocked by this bug")
+        p.add_option('--dependson',
+                metavar='BUGID[, BUGID, ...]', action="append",
+                help="add bug_ids that this bug depends on")
+        p.add_option('--groups',
+                metavar='GROUP[, GROUP, ...]', action="append",
+                help="add groups to which bug is visible")
 
     elif action == 'query':
         p.set_description("List bug reports that match the given criteria.")
@@ -214,10 +211,6 @@ def setup_action_parser(action):
         p.add_option('--from-url',
                 help="Use the query given by a query.cgi URL. (Use quotes!)")
 
-        # Used by unit tests, not for end user consumption
-        p.add_option('--test-return-query', action="store_true",
-                     help=optparse.SUPPRESS_HELP)
-
         # Boolean Charts
         bgrp = optparse.OptionGroup(p, "Boolean options")
         bgrp.add_option('-B', '--booleantype', default="substring",
@@ -255,44 +248,101 @@ def setup_action_parser(action):
                 help='List the components in the given product')
         p.add_option('-o', '--component_owners', metavar="PRODUCT",
                 help='List components (and their owners)')
-        p.add_option('-v', '--versions', metavar="PRODUCT",
+        p.add_option('-v', '--versions', metavar="VERSION",
                 help='List the versions for the given product')
 
     elif action == 'modify':
         p.set_usage("%prog modify [options] BUGID [BUGID...]")
         p.set_description("Modify one or more bugs.")
-        p.add_option('-l', '--comment',
-                help='Add a comment')
-        p.add_option('-k', '--close', metavar="RESOLUTION",
-                help='Close with the given resolution')
-        p.add_option('-d', '--dupeid', metavar="ORIGINAL",
-                help='ID of original bug (implies -k DUPLICATE)')
-        p.add_option('-p', '--private', action='store_true', default=False,
-                help='Mark as private')
-        p.add_option('-s', '--status',
+
+        bgrp = optparse.OptionGroup(p, "Bug details")
+        bgrp.add_option('--product',
+                help="Reassign bug to different product")
+        bgrp.add_option('-c', '--component',
+                help="Reassign bug to different component")
+        bgrp.add_option("-v", '--version',
+                help="Reassign bug to different version")
+        bgrp.add_option('-o', '--os',
+                help="Change operating system this bug occurs on")
+        bgrp.add_option('-a', '--arch',
+                help="Change arch this bug occurs on")
+        bgrp.add_option('-u', '--url',
+                help="URL for further bug info")
+        p.add_option_group(bgrp)
+
+        sgrp = optparse.OptionGroup(p, "Bug status options")
+        sgrp.add_option('-s', '--status',
                 help='Change status of bug')
-        p.add_option('--assignee',
+        sgrp.add_option('-k', '--close', metavar="RESOLUTION",
+                help='Close with the given resolution')
+        sgrp.add_option('-d', '--dupeid', metavar="ORIGINAL",
+                help='ID of original bug (implies -k DUPLICATE)')
+        sgrp.add_option('-F', '--fixed_in', metavar="VERSION",
+                help='"Fixed in version" field')
+        p.add_option_group(sgrp)
+
+        cgrp = optparse.OptionGroup(p, "Comment options")
+        cgrp.add_option('-l', '--comment',
+                help='Add a comment')
+        cgrp.add_option('-p', '--private', action='store_true', default=False,
+                help='Mark new comment as private')
+        cgrp.add_option("--summary", help="Change bug summary")
+        p.add_option_group(cgrp)
+
+        egrp = optparse.OptionGroup(p, "Contact options")
+        egrp.add_option('--assignee',
                 help='Assign bugzilla to assignee')
-        p.add_option('--qa_contact',
+        egrp.add_option('--cc', action='append', metavar="EMAIL",
+                help='Alter CC list. EMAIL appends, -EMAIL removes.')
+        egrp.add_option('--qa_contact',
                 help='Change QA contact')
-        p.add_option('-f', '--flag', action='append',
+        egrp.add_option('--reset-assignee', action="store_true",
+                help='Reset assignee to component default')
+        egrp.add_option('--reset-qa-contact', action="store_true",
+                help='Reset QA contact to component default')
+        egrp.add_option('--groups', metavar='GROUP[, GROUP, ...]',
+                action="append",
+                help="add groups to which bug is visible")
+        p.add_option_group(egrp)
+
+        tgrp = optparse.OptionGroup(p, "Tracking options")
+        tgrp.add_option('-f', '--flag', action='append',
                 help='Update bugzilla flags with requested type, '
                      'ie fedora-cvs?, or needinfoX to clear '
                      '(Use a new option for each flag)')
-        p.add_option('--cc', action='append',
-                help='Add an email to the cc list')
-        p.add_option('--dependson', metavar='BUGID[, BUGID, ...]',
+        tgrp.add_option('--severity', help="Change bug severity")
+        tgrp.add_option('--priority', help="Change bug priority")
+        tgrp.add_option('--target_milestone', help="Set target milestone")
+        tgrp.add_option('--target_release', help="Set target release")
+        tgrp.add_option('--blocked',
+                metavar='BUGID[, BUGID, ...]', action="append",
+                help="Add bug_ids blocked by this bug. BUGID appends, "
+                     "-BUGID removes, =BUGID overwrites")
+        tgrp.add_option('--dependson', metavar='BUGID[, BUGID, ...]',
+                action="append",
                 help=('Alter depends_on list.  BUGID appends, '
                      '-BUGID removes, =BUGID overwrites'))
-        p.add_option('-F', '--fixed_in', metavar="VERSION",
-                help='"Fixed in version" field')
-        p.add_option("", "--whiteboard", metavar="TEXT",
-                help=('Alter status whiteboard text. TEXT appends, '
-                      '-TEXT removes, =TEXT overwrites'))
-        p.add_option('--product',
-                help="Reassing bug to different product")
-        p.add_option('-c', '--component',
-                help="Reassign bug to different component")
+        tgrp.add_option('--keywords',
+                metavar='KEYWORD', action="append",
+                help="Alter bug keywords list. KEYWORD appends, "
+                     "-KEYWORD removes, =KEYWORD overwrites")
+        tgrp.add_option("", "--whiteboard", metavar="TEXT", action="append",
+                help='Alter status whiteboard text. '
+                      'TEXT appends, -TEXT removes, =TEXT overwrites')
+        tgrp.add_option("--devel_whiteboard",
+                metavar="TEXT", action="append",
+                help='Alter devel whiteboard text. '
+                      'TEXT appends, -TEXT removes, =TEXT overwrites')
+        tgrp.add_option("--internal_whiteboard",
+                metavar="TEXT", action="append",
+                help='Alter internal whiteboard text. '
+                      'TEXT appends, -TEXT removes, =TEXT overwrites')
+        tgrp.add_option("--qa_whiteboard",
+                metavar="TEXT", action="append",
+                help='Alter QA whiteboard. '
+                      'TEXT appends, -TEXT removes, =TEXT overwrites')
+        p.add_option_group(tgrp)
+
 
     elif action == 'attach':
         p.set_usage('''
@@ -336,6 +386,12 @@ def setup_action_parser(action):
                      "You can use RPM-style tags that match bug "
                      "fields, e.g.: '%{bug_id}: %{short_desc}'")
         p.add_option_group(outg)
+
+
+    # Used by unit tests, not for end user consumption
+    if action in ['new', 'query', 'modify']:
+        p.add_option('--test-return-result', action="store_true",
+                     help=optparse.SUPPRESS_HELP)
 
     return p
 
@@ -552,7 +608,7 @@ def _do_query(bz, opt, parser):
 
     if not q:
         parser.error("'query' command requires additional arguments")
-    if opt.test_return_query:
+    if opt.test_return_result:
         return q
     return bz.query(q)
 
@@ -694,25 +750,62 @@ def _format_output(bz, opt, buglist):
         print format_field_re.sub(bug_field, opt.outputformat)
 
 
+def _parse_triset(vallist, checkplus=True, checkminus=True, checkequal=True,
+                  splitcomma=False):
+    add_val = []
+    rm_val = []
+    set_val = None
+
+    def make_list(v):
+        if not v:
+            return []
+        if splitcomma:
+            return v.split(",")
+        return [v]
+
+    for val in type(vallist) is list and vallist or [vallist]:
+        val = val or ""
+
+        if val.startswith("+") and checkplus:
+            add_val += make_list(val[1:])
+        elif val.startswith("-") and checkminus:
+            rm_val += make_list(val[1:])
+        elif val.startswith("=") and checkequal:
+            # Intentionally overwrite this
+            set_val = make_list(val[1:])
+        else:
+            add_val += make_list(val)
+
+    return add_val, rm_val, set_val
+
+
 def _do_new(bz, opt):
-    data = {}
-    allopts = ["product", "version", "component", "description",
-               "summary", "op_sys", "platform", "severity", "priority",
-               "bug_file_loc", "cc", "blocked", "dependson", "groups"]
+    # Parse options that accept comma separated list
+    def parse_multi(val):
+        return _parse_triset(val, checkplus=False, checkminus=False,
+                             checkequal=False, splitcomma=True)[0]
 
-    # Handle options that take a list format
-    multiopts = ['cc', 'blocked', 'dependson', 'groups']
+    ret = bz.build_createbug(
+        blocks=parse_multi(opt.blocked) or None,
+        cc=parse_multi(opt.cc) or None,
+        component=opt.component or None,
+        depends_on=parse_multi(opt.dependson) or None,
+        description=opt.description or None,
+        groups=parse_multi(opt.groups) or None,
+        op_sys=opt.os or None,
+        platform=opt.arch or None,
+        priority=opt.priority or None,
+        product=opt.product or None,
+        severity=opt.severity or None,
+        summary=opt.summary or None,
+        url=opt.url or None,
+        version=opt.version or None,
+    )
 
-    for key in allopts:
-        if not hasattr(opt, key) or getattr(opt, key) is None:
-            continue
+    if opt.test_return_result:
+        return ret
 
-        data[key] = getattr(opt, key)
-        if key not in multiopts:
-            continue
-        data[key] = data[key].split(",")
-
-    b = bz.createbug(**data)
+    b = bz.createbug(ret)
     b.refresh()
     return [b]
 
@@ -721,57 +814,67 @@ def _do_modify(bz, parser, opt, args):
     bugid_list = reduce(lambda l1, l2: l1 + l2,
                         [a.split(",") for a in args])
 
+    add_wb, rm_wb, set_wb = _parse_triset(opt.whiteboard)
+    add_devwb, rm_devwb, set_devwb = _parse_triset(opt.devel_whiteboard)
+    add_intwb, rm_intwb, set_intwb = _parse_triset(opt.internal_whiteboard)
+    add_qawb, rm_qawb, set_qawb = _parse_triset(opt.qa_whiteboard)
+
+    add_blk, rm_blk, set_blk = _parse_triset(opt.blocked, splitcomma=True)
+    add_deps, rm_deps, set_deps = _parse_triset(opt.dependson, splitcomma=True)
+    add_key, rm_key, set_key = _parse_triset(opt.keywords)
+    add_cc, rm_cc, ignore = _parse_triset(opt.cc,
+                                          checkplus=False,
+                                          checkequal=False)
+    add_groups, rm_groups, ignore = _parse_triset(opt.groups,
+                                                  checkequal=False,
+                                                  splitcomma=True)
+
     status = opt.status or None
     if opt.dupeid is not None:
         opt.close = "DUPLICATE"
     if opt.close:
         status = "CLOSED"
 
-    def parse_triset(val):
-        val = val or ""
-        add_val = None
-        rm_val = None
-        set_val = None
-
-        if val.startswith("+"):
-            add_val = val[1:]
-        elif val.startswith("-"):
-            rm_val = val[1:]
-        elif val.startswith("="):
-            set_val = val[1:]
-        else:
-            add_val = val
-        return add_val, rm_val, set_val
-
-    def parse_triset_list(val):
-        add_val, rm_val, set_val = parse_triset(val)
-        if add_val:
-            add_val = add_val.split(",")
-        if rm_val:
-            rm_val = rm_val.split(",")
-        if set_val:
-            set_val = set_val.split(",")
-        return add_val, rm_val, set_val
-
-    add_wb, rm_wb, set_wb = parse_triset(opt.whiteboard)
-    add_deps, rm_deps, set_deps = parse_triset_list(opt.dependson)
-
     update = bz.build_update(
+        assigned_to=opt.assignee or None,
         comment=opt.comment or None,
         comment_private=opt.private or None,
         component=opt.component or None,
         product=opt.product or None,
-        cc_add=opt.cc and opt.cc[:] or None,
+        blocks_add=add_blk or None,
+        blocks_remove=rm_blk or None,
+        blocks_set=set_blk,
+        url=opt.url or None,
+        cc_add=add_cc or None,
+        cc_remove=rm_cc or None,
         depends_on_add=add_deps or None,
         depends_on_remove=rm_deps or None,
-        depends_on_set=set_deps or None,
+        depends_on_set=set_deps,
+        groups_add=add_groups or None,
+        groups_remove=rm_groups or None,
+        keywords_add=add_key or None,
+        keywords_remove=rm_key or None,
+        keywords_set=set_key,
+        op_sys=opt.os or None,
+        platform=opt.arch or None,
+        priority=opt.priority or None,
         qa_contact=opt.qa_contact or None,
-        assigned_to=opt.assignee or None,
+        severity=opt.severity or None,
         status=status,
+        summary=opt.summary or None,
+        version=opt.version or None,
+        reset_assigned_to=opt.reset_assignee,
+        reset_qa_contact=opt.reset_qa_contact,
         resolution=opt.close or None,
+        target_release=opt.target_release or None,
+        target_milestone=opt.target_milestone or None,
         dupe_of=opt.dupeid or None,
         fixed_in=opt.fixed_in or None,
-        whiteboard=set_wb or None)
+        whiteboard=set_wb and set_wb[0] or None,
+        devel_whiteboard=set_devwb and set_devwb[0] or None,
+        internal_whiteboard=set_intwb and set_intwb[0] or None,
+        qa_whiteboard=set_qawb and set_qawb[0] or None,
+    )
 
     flags = []
     if opt.flag:
@@ -779,29 +882,44 @@ def _do_modify(bz, parser, opt, args):
         for f in opt.flag:
             flags.append({"name": f[:-1], "status": f[-1]})
 
+    # We make this a little convoluted to facilitate unit testing
+    wbmap = {
+        "status": (add_wb, rm_wb),
+        "internal": (add_intwb, rm_intwb),
+        "qa": (add_qawb, rm_qawb),
+        "devel": (add_devwb, rm_devwb),
+    }
+    for key in wbmap.keys():
+        if not wbmap[key][0] and not wbmap[key][1]:
+            wbmap.pop(key)
+
     log.debug("update bug dict=%s", update)
     log.debug("update flags dict=%s", flags)
+    log.debug("update whiteboard dict=%s", wbmap)
 
-    if (not flags and not update
-        and rm_wb is None and add_wb is None):
+    if (not flags and not update and not wbmap):
         parser.error("'modify' command requires additional arguments")
+
+    if opt.test_return_result:
+        return (update, flags, wbmap)
 
     if flags:
         bz.update_flags(bugid_list, flags)
     if update:
         bz.update_bugs(bugid_list, update)
 
+    if not wbmap:
+        return
 
     # Now for the things we can't blindly batch.
     # This could be improved to batch identical updates.
-    if rm_wb is None and add_wb is None:
-        return
-
+    logging.debug("Adjusting whiteboard fields one by one")
     for bug in bz.getbugs(bugid_list):
-        if add_wb:
-            bug.addtag(add_wb)
-        if rm_wb:
-            bug.deltag(rm_wb)
+        for wbtype, (add_list, rm_list) in wbmap.items():
+            for tag in add_list:
+                bug.addtag(tag, which=wbtype)
+            for tag in rm_list:
+                bug.deltag(tag, which=wbtype)
 
 
 def _do_get_attach(bz, opt, parser, args):
@@ -909,7 +1027,8 @@ def main(bzinstance=None):
         bz = bzinstance
     else:
         bz = bzclass(url=global_opt.bugzilla,
-                     cookiefile=global_opt.cookiefile or -1)
+                     cookiefile=global_opt.cookiefile or -1,
+                     sslverify=global_opt.sslverify)
 
 
     # Handle 'login' action
@@ -974,14 +1093,15 @@ def main(bzinstance=None):
             parser.error("Extra arguments '%s'" % args)
 
         buglist = _do_query(bz, opt, parser)
-        if opt.test_return_query:
+        if opt.test_return_result:
             return buglist
 
     elif action == 'new':
         if args:
             parser.error("Extra arguments '%s'" % args)
-        newbugs = _do_new(bz, opt)
-        buglist = newbugs
+        buglist = _do_new(bz, opt)
+        if opt.test_return_result:
+            return buglist
 
     elif action == 'attach':
         if opt.get or opt.getall:
@@ -994,8 +1114,9 @@ def main(bzinstance=None):
             parser.error('No bug IDs given '
                          '(maybe you forgot an argument somewhere?)')
 
-        _do_modify(bz, parser, opt, args)
-
+        modout = _do_modify(bz, parser, opt, args)
+        if opt.test_return_result:
+            return modout
     else:
         raise RuntimeError("Unexpected action '%s'" % action)
 
@@ -1009,7 +1130,7 @@ if __name__ == '__main__':
         main()
     except KeyboardInterrupt:
         log.debug("", exc_info=True)
-        print "\ninterrupted."
+        print "\nExited at user request."
         sys.exit(1)
     except socket.error, e:
         log.debug("", exc_info=True)
@@ -1022,8 +1143,19 @@ if __name__ == '__main__':
     except xmlrpclib.ProtocolError, e:
         log.debug("", exc_info=True)
         print "\nInvalid server response: %d %s" % (e.errcode, e.errmsg)
-        redir = e.headers.getheader("location", 0)
+
+        # Give SSL recommendations
+        import pycurl
+        sslerrcodes = [getattr(pycurl, ename) for ename in dir(pycurl) if
+                       ename.startswith("E_SSL")]
+        if e.errcode in sslerrcodes:
+            print ("\nIf you trust the remote server, you can work "
+                   "around this error with:\n"
+                  "  bugzilla --nosslverify ...")
+
+        # Detect redirect
+        redir = (e.headers and e.headers.getheader("location", 0) or None)
         if redir:
-            print "Server was attempting a redirect."
-            print 'Try "bugzilla --bugzilla %s ..."' % redir
+            print ("\nServer was attempting a redirect. Try: "
+                   "  bugzilla --bugzilla %s ..." % redir)
         sys.exit(4)
