@@ -9,13 +9,13 @@
 # option) any later version.  See http://www.gnu.org/copyleft/gpl.html for
 # the full text of the license.
 
-from bugzilla import Bugzilla34, log
+from bugzilla import Bugzilla44, log
 
 import urlparse
 
-class NovellBugzilla(Bugzilla34):
+class NovellBugzilla(Bugzilla44):
     '''
-    bugzilla.novell.com is a standard bugzilla 3.4 with some extensions.
+    bugzilla.novell.com is a standard bugzilla 4.4 with some extensions.
     By default, it uses a proprietary AccessManager login system, but by using a special
     domain, you can force it to use HTTP Basic Auth instead.
 
